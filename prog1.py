@@ -5,18 +5,21 @@ from tkinter import ttk, messagebox, filedialog
 from collections import defaultdict
 from datetime import datetime
 import threading
+from PIL import Image, ImageTk  # Новая библиотека для работы с изображениями
+import io
 
 class DuplicateFileFinder:
     def __init__(self, root):
         self.root = root
-        self.root.title("Поиск дубликатов файлов")
-        self.root.geometry("900x600")
+        self.root.title("Поиск дубликатов файлов с предпросмотром")
+        self.root.geometry("1100x600")  # Увеличили ширину для предпросмотра
         
         # Переменные
         self.file_hashes = defaultdict(list)
         self.duplicates = []
         self.scanning = False
         self.selected_for_deletion = set()
+        self.current_preview_image = None  # Для хранения текущего изображения
         
         self.setup_ui()
         
@@ -90,48 +93,92 @@ class DuplicateFileFinder:
                                            maximum=100)
         self.progress_bar.grid(row=3, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=5)
         
-        # Список дубликатов
-        list_frame = ttk.LabelFrame(main_frame, text="Найденные дубликаты", padding="5")
-        list_frame.grid(row=5, column=0, columnspan=3, sticky=(tk.W, tk.E, tk.N, tk.S), pady=10)
+        # Фрейм для списка и предпросмотра
+        content_frame = ttk.Frame(main_frame)
+        content_frame.grid(row=5, column=0, columnspan=3, sticky=(tk.W, tk.E, tk.N, tk.S), pady=10)
+        content_frame.columnconfigure(0, weight=2)
+        content_frame.columnconfigure(1, weight=1)
+        content_frame.rowconfigure(0, weight=1)
+        
+        # Левая часть: Список дубликатов
+        list_frame = ttk.LabelFrame(content_frame, text="Найденные дубликаты", padding="5")
+        list_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), padx=(0, 5))
         list_frame.columnconfigure(0, weight=1)
         list_frame.rowconfigure(0, weight=1)
         
         # Дерево для отображения файлов
-        columns = ('select', 'file', 'size', 'path', 'modified')
-        self.tree = ttk.Treeview(list_frame, columns=columns, show='headings', selectmode='none')
+        columns = ('select', 'file', 'size', 'type', 'path')
+        self.tree = ttk.Treeview(list_frame, columns=columns, show='headings', selectmode='browse')
         
         # Настройка столбцов
         self.tree.heading('select', text='Удалить')
         self.tree.heading('file', text='Имя файла')
         self.tree.heading('size', text='Размер')
+        self.tree.heading('type', text='Тип')
         self.tree.heading('path', text='Путь')
-        self.tree.heading('modified', text='Изменён')
         
         self.tree.column('select', width=50, anchor='center')
         self.tree.column('file', width=150)
         self.tree.column('size', width=80, anchor='e')
-        self.tree.column('path', width=300)
-        self.tree.column('modified', width=120)
+        self.tree.column('type', width=80)
+        self.tree.column('path', width=250)
         
-        # Scrollbar
-        scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=self.tree.yview)
-        self.tree.configure(yscrollcommand=scrollbar.set)
+        # Scrollbar для дерева
+        tree_scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=self.tree.yview)
+        self.tree.configure(yscrollcommand=tree_scrollbar.set)
         
         self.tree.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
-        scrollbar.grid(row=0, column=1, sticky=(tk.N, tk.S))
+        tree_scrollbar.grid(row=0, column=1, sticky=(tk.N, tk.S))
+        
+        # Правая часть: Предпросмотр
+        preview_frame = ttk.LabelFrame(content_frame, text="Предпросмотр", padding="5")
+        preview_frame.grid(row=0, column=1, sticky=(tk.W, tk.E, tk.N, tk.S))
+        preview_frame.columnconfigure(0, weight=1)
+        preview_frame.rowconfigure(0, weight=0)
+        preview_frame.rowconfigure(1, weight=1)
+        
+        # Информация о файле
+        self.preview_info = tk.Text(preview_frame, height=4, width=30, 
+                                   wrap=tk.WORD, state=tk.DISABLED)
+        self.preview_info.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 5))
+        
+        # Область для изображения
+        self.preview_label = ttk.Label(preview_frame, text="Выберите файл для предпросмотра",
+                                      anchor=tk.CENTER, relief=tk.SUNKEN)
+        self.preview_label.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), pady=5)
         
         # Настройка весов для растягивания
         main_frame.rowconfigure(5, weight=1)
         list_frame.rowconfigure(0, weight=1)
         list_frame.columnconfigure(0, weight=1)
+        preview_frame.rowconfigure(1, weight=1)
+        preview_frame.columnconfigure(0, weight=1)
         
         # Привязка событий
         self.tree.bind('<Button-1>', self.on_tree_click)
+        self.tree.bind('<<TreeviewSelect>>', self.on_tree_select)  # Новое событие для предпросмотра
         
     def browse_folder(self):
         folder = filedialog.askdirectory()
         if folder:
             self.path_var.set(folder)
+            
+    def get_file_type(self, filename):
+        """Определяет тип файла по расширению"""
+        ext = os.path.splitext(filename)[1].lower()
+        image_exts = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.webp']
+        doc_exts = ['.txt', '.pdf', '.doc', '.docx', '.xls', '.xlsx']
+        
+        if ext in image_exts:
+            return 'Изображение'
+        elif ext in doc_exts:
+            return 'Документ'
+        elif ext in ['.mp3', '.wav', '.flac']:
+            return 'Аудио'
+        elif ext in ['.mp4', '.avi', '.mkv']:
+            return 'Видео'
+        else:
+            return 'Другой'
             
     def calculate_hash(self, filepath):
         """Вычисляет хеш файла"""
@@ -144,7 +191,86 @@ class DuplicateFileFinder:
         except Exception as e:
             print(f"Ошибка чтения файла {filepath}: {e}")
             return None
+    
+    def show_preview(self, filepath):
+        """Показывает предпросмотр файла"""
+        # Очищаем предыдущее изображение
+        if self.current_preview_image:
+            self.current_preview_image = None
+        
+        # Обновляем информацию о файле
+        self.preview_info.config(state=tk.NORMAL)
+        self.preview_info.delete(1.0, tk.END)
+        
+        try:
+            # Основная информация
+            filename = os.path.basename(filepath)
+            size = os.path.getsize(filepath)
+            modified = datetime.fromtimestamp(os.path.getmtime(filepath))
+            file_type = self.get_file_type(filename)
             
+            info_text = f"Имя: {filename}\n"
+            info_text += f"Тип: {file_type}\n"
+            info_text += f"Размер: {self.format_size(size)}\n"
+            info_text += f"Изменён: {modified.strftime('%d.%m.%Y %H:%M')}"
+            
+            self.preview_info.insert(1.0, info_text)
+            self.preview_info.config(state=tk.DISABLED)
+            
+            # Показываем изображение если это картинка
+            ext = os.path.splitext(filename)[1].lower()
+            image_exts = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.webp']
+            
+            if ext in image_exts:
+                try:
+                    # Открываем и изменяем размер изображения
+                    img = Image.open(filepath)
+                    
+                    # Получаем размеры области предпросмотра
+                    preview_width = self.preview_label.winfo_width() or 200
+                    preview_height = self.preview_label.winfo_height() or 200
+                    
+                    # Масштабируем с сохранением пропорций
+                    img.thumbnail((preview_width, preview_height), Image.Resampling.LANCZOS)
+                    
+                    # Конвертируем для tkinter
+                    self.current_preview_image = ImageTk.PhotoImage(img)
+                    self.preview_label.config(image=self.current_preview_image, text="")
+                    
+                except Exception as e:
+                    self.preview_label.config(image='', text=f"Не удалось загрузить изображение\n{str(e)}")
+            else:
+                self.preview_label.config(image='', text=f"Предпросмотр для {ext}\nне поддерживается")
+                
+        except Exception as e:
+            self.preview_info.config(state=tk.NORMAL)
+            self.preview_info.delete(1.0, tk.END)
+            self.preview_info.insert(1.0, f"Ошибка: {str(e)}")
+            self.preview_info.config(state=tk.DISABLED)
+            self.preview_label.config(image='', text="Ошибка загрузки файла")
+    
+    def format_size(self, size):
+        """Форматирует размер файла"""
+        if size < 1024:
+            return f"{size} B"
+        elif size < 1024*1024:
+            return f"{size/1024:.1f} KB"
+        elif size < 1024*1024*1024:
+            return f"{size/(1024*1024):.1f} MB"
+        else:
+            return f"{size/(1024*1024*1024):.1f} GB"
+    
+    def on_tree_select(self, event):
+        """Обработка выбора строки в дереве для предпросмотра"""
+        selection = self.tree.selection()
+        if selection:
+            item = selection[0]
+            values = self.tree.item(item, 'values')
+            if len(values) > 3:  # Проверяем что есть путь
+                filepath = values[4]  # Путь в 5-й колонке
+                if os.path.exists(filepath):
+                    self.show_preview(filepath)
+    
     def scan_directory(self):
         """Сканирует директорию на наличие дубликатов"""
         if self.scanning:
@@ -160,6 +286,7 @@ class DuplicateFileFinder:
         self.stop_btn.config(state=tk.NORMAL)
         self.delete_btn.config(state=tk.DISABLED)
         self.clear_list()
+        self.preview_label.config(image='', text="Выберите файл для предпросмотра")
         
         self.status_var.set("Сканирование...")
         self.progress_var.set(0)
@@ -270,16 +397,10 @@ class DuplicateFileFinder:
                 try:
                     filename = os.path.basename(filepath)
                     size = os.path.getsize(filepath)
-                    modified = datetime.fromtimestamp(os.path.getmtime(filepath))
-                    modified_str = modified.strftime("%Y-%m-%d %H:%M")
+                    file_type = self.get_file_type(filename)
                     
                     # Форматирование размера
-                    if size < 1024:
-                        size_str = f"{size} B"
-                    elif size < 1024*1024:
-                        size_str = f"{size/1024:.1f} KB"
-                    else:
-                        size_str = f"{size/(1024*1024):.1f} MB"
+                    size_str = self.format_size(size)
                     
                     # Определяем, какой файл оставить (первый в группе)
                     keep = "Оставить" if i == 0 else ""
@@ -288,8 +409,8 @@ class DuplicateFileFinder:
                         '',  # Чекбокс
                         filename,
                         size_str,
-                        filepath,
-                        modified_str
+                        file_type,
+                        filepath
                     ))
                     
                     # Помечаем первый файл как оставляемый
@@ -314,7 +435,7 @@ class DuplicateFileFinder:
             
             if column == "#1":  # Колонка с чекбоксами
                 values = self.tree.item(item, 'values')
-                filepath = values[3]
+                filepath = values[4]
                 
                 # Не позволяем отметить файл для удаления, если он помечен как "оставить"
                 tags = self.tree.item(item, 'tags')
@@ -359,6 +480,12 @@ class DuplicateFileFinder:
             # Обновляем отображение
             self.display_duplicates()
             
+            # Очищаем предпросмотр
+            self.preview_label.config(image='', text="Выберите файл для предпросмотра")
+            self.preview_info.config(state=tk.NORMAL)
+            self.preview_info.delete(1.0, tk.END)
+            self.preview_info.config(state=tk.DISABLED)
+            
             # Показываем результат
             message = f"Удалено: {deleted_count} файлов"
             if failed_count > 0:
@@ -374,6 +501,10 @@ class DuplicateFileFinder:
         self.duplicates.clear()
         self.selected_for_deletion.clear()
         self.delete_btn.config(state=tk.DISABLED)
+        self.preview_label.config(image='', text="Выберите файл для предпросмотра")
+        self.preview_info.config(state=tk.NORMAL)
+        self.preview_info.delete(1.0, tk.END)
+        self.preview_info.config(state=tk.DISABLED)
         self.status_var.set("Список очищен")
 
 def main():
